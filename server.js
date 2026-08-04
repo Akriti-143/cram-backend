@@ -45,7 +45,10 @@ app.post('/generate-flashcards', async (req, res) => {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemInstruction }] },
         contents: [{ role: 'user', parts }],
-        generationConfig: { maxOutputTokens: 1000 }
+        generationConfig: {
+          maxOutputTokens: 2048,
+          thinkingConfig: { thinkingLevel: 'minimal' }
+        }
       })
     });
 
