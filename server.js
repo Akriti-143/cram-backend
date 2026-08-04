@@ -6,7 +6,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
+const API_KEY = process.env.GOOGLE_API_KEY;
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 app.get('/', (req, res) => {
   res.send('Cram flashcard backend is running.');
@@ -15,7 +17,7 @@ app.get('/', (req, res) => {
 app.post('/generate-flashcards', async (req, res) => {
   try {
     if (!API_KEY) {
-      return res.status(500).json({ error: 'Server is missing its API key. Set ANTHROPIC_API_KEY in Render.' });
+      return res.status(500).json({ error: 'Server is missing its API key. Set GOOGLE_API_KEY in Render.' });
     }
 
     const { mode, count, text, image } = req.body;
@@ -24,46 +26,38 @@ app.post('/generate-flashcards', async (req, res) => {
       return res.status(400).json({ error: 'Missing notes to generate flashcards from.' });
     }
 
-    let contentBlocks = [];
+    const instruction = mode === 'photo'
+      ? `Read the notes/textbook content in this photo and generate exactly ${count} flashcards from it.`
+      : `Generate exactly ${count} flashcards from these notes:\n\n${text}`;
+
+    const systemInstruction = 'You are a study assistant that converts notes into concise exam flashcards. Respond with ONLY a raw JSON array, no markdown fences, no preamble, no explanation. Each element must be an object with exactly two keys: "q" (a short, clear question) and "a" (a short, direct answer, ideally under 20 words). Base every card strictly on the content given — do not invent facts not present in the source.';
+
+    let parts = [{ text: instruction }];
     if (mode === 'photo') {
-      contentBlocks.push({
-        type: 'image',
-        source: { type: 'base64', media_type: image.mediaType, data: image.base64 }
-      });
-      contentBlocks.push({
-        type: 'text',
-        text: `Read the notes/textbook content in this photo and generate exactly ${count} flashcards from it.`
-      });
-    } else {
-      contentBlocks.push({
-        type: 'text',
-        text: `Generate exactly ${count} flashcards from these notes:\n\n${text}`
+      parts.push({
+        inline_data: { mime_type: image.mediaType, data: image.base64 }
       });
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(`${GEMINI_URL}?key=${API_KEY}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system: 'You are a study assistant that converts notes into concise exam flashcards. Respond with ONLY a raw JSON array, no markdown fences, no preamble, no explanation. Each element must be an object with exactly two keys: "q" (a short, clear question) and "a" (a short, direct answer, ideally under 20 words). Base every card strictly on the content given — do not invent facts not present in the source.',
-        messages: [{ role: 'user', content: contentBlocks }]
+        system_instruction: { parts: [{ text: systemInstruction }] },
+        contents: [{ role: 'user', parts }],
+        generationConfig: { maxOutputTokens: 1000 }
       })
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error('Anthropic API error:', response.status, errText);
+      console.error('Gemini API error:', response.status, errText);
       return res.status(502).json({ error: 'The AI service failed to respond. Try again in a moment.' });
     }
 
     const data = await response.json();
-    const textOut = (data.content || []).map(b => b.text || '').join('\n').trim();
+    const textOut = (data.candidates?.[0]?.content?.parts || [])
+      .map(p => p.text || '').join('\n').trim();
     const cleaned = textOut.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
 
     let parsed;
